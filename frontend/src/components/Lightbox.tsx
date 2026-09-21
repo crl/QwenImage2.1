@@ -1,16 +1,16 @@
 import { useEffect } from 'react'
-import { Download, MessageSquare, Trash2, X } from 'lucide-react'
+import { Download, Pencil, Trash2, X } from 'lucide-react'
 import type { ImageRecord } from '../types'
 import { downloadUrl, imageUrl } from '../api'
 
 type Props = {
   image: ImageRecord | null
   onClose: () => void
-  onOpenChat: (conversationId: string) => void
+  onEdit: (image: ImageRecord) => void
   onDelete: (image: ImageRecord) => void
 }
 
-export function Lightbox({ image, onClose, onOpenChat, onDelete }: Props) {
+export function Lightbox({ image, onClose, onEdit, onDelete }: Props) {
   useEffect(() => {
     if (!image) return
     function onKey(event: KeyboardEvent) {
@@ -37,10 +37,10 @@ export function Lightbox({ image, onClose, onOpenChat, onDelete }: Props) {
           <button
             type="button"
             className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-fg hover:bg-white/20"
-            aria-label="在对话中编辑"
-            onClick={() => onOpenChat(image.conversation_id)}
+            aria-label="编辑这张图"
+            onClick={() => onEdit(image)}
           >
-            <MessageSquare className="h-5 w-5" aria-hidden="true" />
+            <Pencil className="h-5 w-5" aria-hidden="true" />
           </button>
           <button
             type="button"

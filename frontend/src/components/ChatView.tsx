@@ -7,9 +7,10 @@ type Props = {
   loading?: boolean
   onOpenImage: (image: ImageRecord) => void
   onDeleteImage: (image: ImageRecord) => void
+  onEditImage: (image: ImageRecord) => void
 }
 
-export function ChatView({ conversation, loading, onOpenImage, onDeleteImage }: Props) {
+export function ChatView({ conversation, loading, onOpenImage, onDeleteImage, onEditImage }: Props) {
   if (loading && !conversation) {
     return <div className="flex flex-1 items-center justify-center text-sm text-muted">加载对话…</div>
   }
@@ -23,6 +24,7 @@ export function ChatView({ conversation, loading, onOpenImage, onDeleteImage }: 
           message={message}
           onOpenImage={onOpenImage}
           onDeleteImage={onDeleteImage}
+          onEditImage={onEditImage}
         />
       ))}
     </div>
@@ -45,10 +47,12 @@ function MessageBlock({
   message,
   onOpenImage,
   onDeleteImage,
+  onEditImage,
 }: {
   message: Message
   onOpenImage: (image: ImageRecord) => void
   onDeleteImage: (image: ImageRecord) => void
+  onEditImage: (image: ImageRecord) => void
 }) {
   if (message.role === 'user') {
     return (
@@ -64,12 +68,12 @@ function MessageBlock({
                     key={image.id}
                     type="button"
                     onClick={() => onOpenImage(image)}
-                    className="overflow-hidden rounded-2xl"
+                    className="checker overflow-hidden rounded-2xl"
                   >
                     <img
                       src={imageUrl(image.id)}
                       alt={image.prompt || '引用图像'}
-                      className="h-36 max-w-[220px] object-cover"
+                      className="h-40 max-w-[240px] object-contain"
                     />
                   </button>
                 ),
@@ -109,13 +113,25 @@ function MessageBlock({
           <DeletedImageFrame key={image.id} />
         ) : (
           <figure key={image.id} className="overflow-hidden rounded-3xl border border-border">
-            <button type="button" className="checker block w-full" onClick={() => onOpenImage(image)}>
-              <img
-                src={imageUrl(image.id)}
-                alt={image.prompt || '生成图像'}
-                className="max-h-[72vh] w-full object-contain"
-              />
-            </button>
+            <div className="relative">
+              <button type="button" className="checker block w-full" onClick={() => onOpenImage(image)}>
+                <img
+                  src={imageUrl(image.id)}
+                  alt={image.prompt || '生成图像'}
+                  className="max-h-[72vh] w-full object-contain"
+                />
+              </button>
+              <button
+                type="button"
+                className="absolute bottom-3 left-3 z-10 rounded-full bg-black/70 px-3 py-1.5 text-sm text-white hover:bg-black/85"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onEditImage(image)
+                }}
+              >
+                编辑
+              </button>
+            </div>
             <figcaption className="flex items-center justify-between gap-3 border-t border-border bg-elevated px-4 py-3 text-sm text-muted">
               <span>
                 {image.width && image.height ? `${image.width}×${image.height}` : 'PNG'}

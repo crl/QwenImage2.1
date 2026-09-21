@@ -25,6 +25,15 @@ ASPECT_RATIOS = {
     "2:3": (2, 3),
     "16:9": (16, 9),
     "9:16": (9, 16),
+    "4:5": (4, 5),
+    "5:4": (5, 4),
+    "21:9": (21, 9),
+}
+
+QUALITY_BASE = {
+    "1k": 1024,
+    "2k": 2048,
+    "4k": 3840,
 }
 
 
@@ -32,9 +41,17 @@ def ensure_dirs() -> None:
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def pixel_size(aspect: str, quality: str) -> tuple[int, int]:
-    wr, hr = ASPECT_RATIOS.get(aspect, (1, 1))
-    megapixels = 2048 * 2048 if quality == "2k" else 1024 * 1024
+def pixel_size(
+    aspect: str,
+    quality: str,
+    source_wh: tuple[int, int] | None = None,
+) -> tuple[int, int]:
+    if aspect == "auto" and source_wh and source_wh[0] > 0 and source_wh[1] > 0:
+        wr, hr = source_wh
+    else:
+        wr, hr = ASPECT_RATIOS.get(aspect, (1, 1))
+    base = QUALITY_BASE.get(quality, 1024)
+    megapixels = base * base
     width = round(((megapixels * wr / hr) ** 0.5) / 32) * 32
     height = round(((megapixels * hr / wr) ** 0.5) / 32) * 32
     return max(32, width), max(32, height)

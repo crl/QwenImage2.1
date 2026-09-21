@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from '
 import { ChatView } from './components/ChatView'
 import { Composer } from './components/Composer'
 import { ConfirmDialog } from './components/ConfirmDialog'
+import { ImageEditor, type ImageEditorHandle } from './components/ImageEditor'
 import { LibraryView } from './components/LibraryView'
 import { Lightbox } from './components/Lightbox'
 import { Sidebar } from './components/Sidebar'
@@ -21,11 +22,18 @@ import {
   sendMessage,
   setConversationArchived,
 } from './api'
-import type { Aspect, Conversation, ConversationSummary, Health, ImageRecord, Quality, StudioEvent } from './types'
+import type { Aspect, Conversation, ConversationSummary, EditMode, Health, ImageRecord, Pads, Quality, StudioEvent } from './types'
 
 type PendingDelete =
   | { type: 'image'; image: ImageRecord; scope: 'chat' | 'library' }
   | { type: 'conversation'; conversation: ConversationSummary }
+
+type EditorSession = {
+  image: ImageRecord
+  tool: EditMode
+}
+
+const EMPTY_PADS: Pads = { left: 0, top: 0, right: 0, bottom: 0 }
 
 export default function App() {
   return (
@@ -53,11 +61,15 @@ function Studio() {
   const [transparent, setTransparent] = useState(false)
   const [files, setFiles] = useState<File[]>([])
   const [lightbox, setLightbox] = useState<ImageRecord | null>(null)
+  const [editor, setEditor] = useState<EditorSession | null>(null)
+  const [hasMask, setHasMask] = useState(false)
+  const [pads, setPads] = useState<Pads>(EMPTY_PADS)
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const sourceRef = useRef<EventSource | null>(null)
   const threadRef = useRef<HTMLDivElement>(null)
+  const editorRef = useRef<ImageEditorHandle | null>(null)
 
   const busy = useMemo(
     () => conversation?.messages.some((item) => item.status === 'generating') ?? false,
@@ -107,7 +119,10 @@ function Studio() {
     let cancelled = false
     getConversation(id)
       .then((data) => {
-        if (!cancelled) setConversation(data)
+        if (!cancelled) {
+          setConversation(data)
+          setError(null)
+        }
       })
       .catch((err: Error) => setError(err.message))
 
@@ -166,18 +181,49 @@ function Studio() {
 
   useEffect(() => {
     const el = threadRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [conversation])
+    if (el && !editor) el.scrollTop = el.scrollHeight
+  }, [conversation, editor])
 
-  async function handleSubmit() {
-    if (!prompt.trim()) return
+  useEffect(() => {
+    if (editor && id && editor.image.conversation_id !== id) {
+      setEditor(null)
+    }
+  }, [id, editor])
+
+  function openEditor(image: ImageRecord, tool: EditMode = 'erase') {
+    setLightbox(null)
+    setFiles([])
+    setHasMask(false)
+    setPads(EMPTY_PADS)
+    setEditor({ image, tool })
+    if (id !== image.conversation_id) navigate(`/c/${image.conversation_id}`)
+  }
+
+  async function handleSubmit(session: EditorSession | null = editor) {
+    if (session == null && !prompt.trim()) return
     if (!health?.ok) {
       setError('请先启动 Comfy Desktop，并确认 8188 端口可用')
       return
     }
+    let mask: Blob | null = null
+    let nextPads = pads
+    if (session?.tool === 'erase') {
+      mask = (await editorRef.current?.exportMask()) ?? null
+      if (!mask) {
+        setError('请先涂抹要修改的区域')
+        return
+      }
+    }
+    if (session?.tool === 'outpaint') {
+      nextPads = editorRef.current?.pads ?? pads
+      if (nextPads.left + nextPads.top + nextPads.right + nextPads.bottom <= 0) {
+        setError('请先扩展画布')
+        return
+      }
+    }
     setError(null)
     try {
-      let conversationId = id
+      let conversationId = id || session?.image.conversation_id
       if (!conversationId) {
         const created = await createConversation(prompt.trim().slice(0, 36))
         conversationId = created.id
@@ -186,12 +232,17 @@ function Studio() {
       const result = await sendMessage(conversationId, {
         prompt: prompt.trim(),
         aspect,
-        quality,
-        transparent,
-        files,
+        quality: session?.tool === 'enhance' ? '2k' : quality,
+        transparent: session ? false : transparent,
+        files: session ? [] : files,
+        editMode: session?.tool,
+        sourceImageId: session?.image.id,
+        mask,
+        pads: session?.tool === 'outpaint' ? nextPads : undefined,
       })
       setPrompt('')
       setFiles([])
+      setEditor(null)
       setConversation((current) => {
         const base = current ?? {
           id: conversationId!,
@@ -258,6 +309,7 @@ function Studio() {
           await deleteImage(image.id)
         }
         setLightbox((current) => (current?.id === image.id ? null : current))
+        setEditor((current) => (current?.image.id === image.id ? null : current))
         setConversation((current) => {
           if (!current) return current
           return {
@@ -273,6 +325,7 @@ function Studio() {
         const conversationId = pendingDelete.conversation.id
         await deleteConversation(conversationId)
         setLightbox((current) => (current?.conversation_id === conversationId ? null : current))
+        setEditor((current) => (current?.image.conversation_id === conversationId ? null : current))
         if (id === conversationId) {
           setConversation(null)
           navigate('/')
@@ -294,8 +347,14 @@ function Studio() {
         archivedConversations={archivedConversations}
         activeId={id}
         health={health}
-        onNew={() => navigate('/')}
-        onOpenLibrary={() => navigate('/')}
+        onNew={() => {
+          setEditor(null)
+          navigate('/')
+        }}
+        onOpenLibrary={() => {
+          setEditor(null)
+          navigate('/')
+        }}
         onOpenConversation={(cid) => navigate(`/c/${cid}`)}
         onArchive={(cid) => void handleArchive(cid)}
         onUnarchive={(cid) => void handleUnarchive(cid)}
@@ -313,12 +372,25 @@ function Studio() {
             {error}
           </div>
         )}
-        <div ref={threadRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          {id ? (
+        <div ref={threadRef} className={`flex min-h-0 flex-1 flex-col ${editor ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+          {editor ? (
+            <ImageEditor
+              image={editor.image}
+              tool={editor.tool}
+              busy={busy}
+              editorRef={editorRef}
+              onTool={(tool) => setEditor((current) => (current ? { ...current, tool } : current))}
+              onClose={() => setEditor(null)}
+              onEnhance={() => void handleSubmit({ image: editor.image, tool: 'enhance' })}
+              onMaskChange={setHasMask}
+              onPadsChange={setPads}
+            />
+          ) : id ? (
             <ChatView
               conversation={conversation}
               onOpenImage={setLightbox}
               onDeleteImage={(image) => setPendingDelete({ type: 'image', image, scope: 'chat' })}
+              onEditImage={(image) => openEditor(image)}
             />
           ) : (
             <LibraryView
@@ -337,7 +409,23 @@ function Studio() {
             files={files}
             busy={busy}
             disabled={health?.ok === false}
-            placeholder={id ? '继续描述修改，可粘贴或上传参考图' : '描述你想生成的图像，可粘贴参考图'}
+            editMode={editor?.tool}
+            allowEmpty={
+              editor?.tool === 'erase'
+                ? hasMask
+                : editor?.tool === 'outpaint'
+                  ? pads.left + pads.top + pads.right + pads.bottom > 0
+                  : false
+            }
+            placeholder={
+              editor?.tool === 'erase'
+                ? '描述要改成什么，留空则抹掉填回周围'
+                : editor?.tool === 'outpaint'
+                  ? '可选描述扩展后的内容，留空则自然外延'
+                  : id
+                    ? '继续描述修改，可粘贴或上传参考图'
+                    : '描述你想生成的图像，可粘贴参考图'
+            }
             onPrompt={setPrompt}
             onAspect={setAspect}
             onQuality={setQuality}
@@ -351,10 +439,7 @@ function Studio() {
       <Lightbox
         image={lightbox}
         onClose={() => setLightbox(null)}
-        onOpenChat={(cid) => {
-          setLightbox(null)
-          navigate(`/c/${cid}`)
-        }}
+        onEdit={(image) => openEditor(image)}
         onDelete={(image) => setPendingDelete({ type: 'image', image, scope: id ? 'chat' : 'library' })}
       />
       <ConfirmDialog

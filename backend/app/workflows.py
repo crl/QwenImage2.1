@@ -139,3 +139,69 @@ def build_edit(
         "inputs": {"images": ["8", 0], "filename_prefix": "QwenStudioEdit"},
     }
     return graph
+
+
+def build_masked_edit(
+    prompt: str,
+    *,
+    vision_name: str,
+    original_name: str,
+    mask_name: str,
+    seed: int,
+    steps: int = DEFAULT_STEPS,
+    resolution: int = 0,
+    negative_prompt: str = "",
+) -> dict[str, Any]:
+    graph = _loaders()
+    graph["20"] = {"class_type": "LoadImage", "inputs": {"image": original_name}}
+    graph["21"] = {"class_type": "LoadImage", "inputs": {"image": vision_name}}
+    graph["22"] = {
+        "class_type": "LoadImageMask",
+        "inputs": {"image": mask_name, "channel": "red"},
+    }
+    graph["5"] = {
+        "class_type": "TextEncodeQwenImage21",
+        "inputs": {
+            "clip": ["2", 0],
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "resolution": resolution,
+            "vae": ["3", 0],
+            "images.image_1": ["21", 0],
+        },
+    }
+    graph["7"] = {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["4", 0],
+            "seed": seed,
+            "steps": steps,
+            "cfg": DEFAULT_CFG,
+            "sampler_name": DEFAULT_SAMPLER,
+            "scheduler": DEFAULT_SCHEDULER,
+            "positive": ["5", 0],
+            "negative": ["5", 1],
+            "latent_image": ["5", 2],
+            "denoise": 1.0,
+        },
+    }
+    graph["8"] = {
+        "class_type": "VAEDecode",
+        "inputs": {"samples": ["7", 0], "vae": ["3", 0]},
+    }
+    graph["10"] = {
+        "class_type": "ImageCompositeMasked",
+        "inputs": {
+            "destination": ["20", 0],
+            "source": ["8", 0],
+            "x": 0,
+            "y": 0,
+            "resize_source": True,
+            "mask": ["22", 0],
+        },
+    }
+    graph["9"] = {
+        "class_type": "SaveImage",
+        "inputs": {"images": ["10", 0], "filename_prefix": "QwenStudioEdit"},
+    }
+    return graph

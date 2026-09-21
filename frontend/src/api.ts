@@ -1,4 +1,4 @@
-import type { Conversation, ConversationSummary, Health, ImageRecord, Message } from './types'
+import type { Conversation, ConversationSummary, EditMode, Health, ImageRecord, Message, Pads } from './types'
 
 async function parse<T>(res: Promise<Response>): Promise<T> {
   const response = await res
@@ -71,6 +71,10 @@ export function sendMessage(
     quality: string
     transparent: boolean
     files: File[]
+    editMode?: EditMode
+    sourceImageId?: string
+    mask?: Blob | null
+    pads?: Pads
   },
 ) {
   const body = new FormData()
@@ -79,6 +83,15 @@ export function sendMessage(
   body.append('quality', payload.quality)
   body.append('transparent', payload.transparent ? 'true' : 'false')
   payload.files.forEach((file) => body.append('files', file))
+  if (payload.editMode) body.append('edit_mode', payload.editMode)
+  if (payload.sourceImageId) body.append('source_image_id', payload.sourceImageId)
+  if (payload.mask) body.append('mask', payload.mask, 'mask.png')
+  if (payload.pads) {
+    body.append('pad_left', String(payload.pads.left))
+    body.append('pad_top', String(payload.pads.top))
+    body.append('pad_right', String(payload.pads.right))
+    body.append('pad_bottom', String(payload.pads.bottom))
+  }
   return parse<{ user: Message; assistant: Message }>(
     fetch(`/api/conversations/${id}/messages`, { method: 'POST', body }),
   )

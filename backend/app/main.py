@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from .comfy import ComfyClient
 from .config import DEFAULT_STEPS, IMAGES_DIR, ensure_dirs
-from .generate import jobs, run_generation
+from .generate import display_prompt, edit_preview_image, jobs, run_generation
 from .hub import EventHub
 from .store import Store
 
@@ -122,26 +122,58 @@ def delete_conversation(cid: str) -> dict[str, Any]:
 @app.post("/api/conversations/{cid}/messages")
 async def send_message(
     cid: str,
-    prompt: str = Form(...),
+    prompt: str = Form(""),
     aspect: str = Form("1:1"),
     quality: str = Form("1k"),
     transparent: str = Form("false"),
     steps: int = Form(DEFAULT_STEPS),
+    edit_mode: str = Form(""),
+    source_image_id: str = Form(""),
+    pad_left: int = Form(0),
+    pad_top: int = Form(0),
+    pad_right: int = Form(0),
+    pad_bottom: int = Form(0),
     files: list[UploadFile] | None = File(default=None),
+    mask: UploadFile | None = File(default=None),
 ) -> dict[str, Any]:
     conv = store.get_conversation(cid)
     if not conv:
         raise HTTPException(404, "对话不存在")
-    if not prompt.strip():
+    mode = (edit_mode or "").strip().lower()
+    if mode not in {"", "erase", "outpaint", "enhance"}:
+        raise HTTPException(400, "不支持的编辑模式")
+    if not prompt.strip() and not mode:
         raise HTTPException(400, "请输入描述")
     if any(m.get("status") == "generating" for m in conv["messages"]):
         raise HTTPException(409, "当前对话正在生成")
 
+    source = None
+    if mode:
+        if not source_image_id.strip():
+            raise HTTPException(400, "缺少要编辑的图片")
+        source = store.get_image(source_image_id.strip())
+        if not source or source.get("conversation_id") != cid:
+            raise HTTPException(404, "要编辑的图片不存在")
+        if mode == "enhance":
+            quality = "2k"
+
     uploaded: list[tuple[str, bytes]] = []
-    for item in (files or [])[:10]:
-        data = await item.read()
-        if data:
-            uploaded.append((item.filename or "upload.png", data))
+    if not mode:
+        for item in (files or [])[:10]:
+            data = await item.read()
+            if data:
+                uploaded.append((item.filename or "upload.png", data))
+
+    mask_bytes: bytes | None = None
+    if mask is not None:
+        mask_bytes = await mask.read()
+        if not mask_bytes:
+            mask_bytes = None
+    if mode == "erase" and not mask_bytes:
+        raise HTTPException(400, "请先涂抹要修改的区域")
+    pads = (max(0, pad_left), max(0, pad_top), max(0, pad_right), max(0, pad_bottom))
+    if mode == "outpaint" and sum(pads) <= 0:
+        raise HTTPException(400, "请先扩展画布")
 
     is_transparent = transparent.lower() in {"1", "true", "yes", "on"}
     params = {
@@ -149,38 +181,65 @@ async def send_message(
         "quality": quality,
         "transparent": is_transparent,
         "steps": steps,
-        "mode": "edit" if uploaded or store.last_output_image(cid) else "t2i",
+        "mode": mode or ("edit" if uploaded or store.last_output_image(cid) else "t2i"),
     }
-    title = prompt.strip().replace("\n", " ")[:36]
+    shown = display_prompt(mode or None, prompt)
+    title = shown.replace("\n", " ")[:36]
     if conv["title"] in {"新对话", ""}:
         store.touch_conversation(cid, title)
     else:
         store.touch_conversation(cid)
 
-    user = store.add_message(cid, "user", prompt.strip(), params=params)
+    user = store.add_message(cid, "user", shown, params=params)
     ref_ids: list[str] = []
-    for original_name, data in uploaded:
-        suffix = Path(original_name).suffix.lower()
-        if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-            suffix = ".png"
-        filename = f"{uuid.uuid4().hex}{suffix}"
-        (IMAGES_DIR / filename).write_bytes(data)
-        width = height = None
-        try:
-            with Image.open(BytesIO(data)) as img:
-                width, height = img.size
-        except Exception:
-            pass
-        record = store.add_image(
-            cid,
-            user["id"],
-            filename,
-            prompt.strip(),
-            width,
-            height,
-            kind="reference",
-        )
-        ref_ids.append(record["id"])
+    if source:
+        preview_record = None
+        if mode in {"erase", "outpaint"}:
+            source_path = IMAGES_DIR / source["filename"]
+            if source_path.exists():
+                with Image.open(source_path) as src_img:
+                    preview = edit_preview_image(
+                        mode,
+                        src_img.copy(),
+                        mask_bytes=mask_bytes,
+                        pads=pads if mode == "outpaint" else None,
+                    )
+                if preview is not None:
+                    filename = f"{uuid.uuid4().hex}.png"
+                    preview.save(IMAGES_DIR / filename, format="PNG")
+                    preview_record = store.add_image(
+                        cid,
+                        user["id"],
+                        filename,
+                        shown,
+                        preview.width,
+                        preview.height,
+                        kind="reference",
+                    )
+        ref_ids.append((preview_record or source)["id"])
+    else:
+        for original_name, data in uploaded:
+            suffix = Path(original_name).suffix.lower()
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+                suffix = ".png"
+            filename = f"{uuid.uuid4().hex}{suffix}"
+            (IMAGES_DIR / filename).write_bytes(data)
+            width = height = None
+            try:
+                with Image.open(BytesIO(data)) as img:
+                    width, height = img.size
+            except Exception:
+                pass
+            record = store.add_image(
+                cid,
+                user["id"],
+                filename,
+                shown,
+                width,
+                height,
+                kind="reference",
+            )
+            ref_ids.append(record["id"])
     if ref_ids:
         updated = store.update_message(user["id"], ref_image_ids=ref_ids)
         if updated:
@@ -205,6 +264,10 @@ async def send_message(
             transparent=is_transparent,
             steps=int(steps),
             uploaded=uploaded,
+            edit_mode=mode or None,
+            source_image=source,
+            mask_bytes=mask_bytes,
+            pads=pads if mode == "outpaint" else None,
         )
     )
     _running_tasks.add(task)

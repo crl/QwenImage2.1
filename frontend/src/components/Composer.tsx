@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, ImagePlus, Square, X } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
-import { ASPECTS, type Aspect, type Quality } from '../types'
+import { type Aspect, type EditMode, type Quality } from '../types'
+import { SizePicker } from './SizePicker'
 
 type Props = {
   prompt: string
@@ -12,6 +13,8 @@ type Props = {
   busy: boolean
   disabled?: boolean
   placeholder?: string
+  editMode?: EditMode | null
+  allowEmpty?: boolean
   onPrompt: (value: string) => void
   onAspect: (value: Aspect) => void
   onQuality: (value: Quality) => void
@@ -35,6 +38,8 @@ export function Composer({
   busy,
   disabled,
   placeholder = '描述你想生成或修改的图像',
+  editMode,
+  allowEmpty = false,
   onPrompt,
   onAspect,
   onQuality,
@@ -98,6 +103,7 @@ export function Composer({
 
   useEffect(() => {
     function onPaste(event: ClipboardEvent) {
+      if (editMode) return
       const target = event.target
       if (target instanceof HTMLInputElement) return
       if (target instanceof HTMLTextAreaElement && target !== areaRef.current) return
@@ -123,7 +129,7 @@ export function Composer({
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
-  }, [onFiles, onPrompt, prompt])
+  }, [editMode, onFiles, onPrompt, prompt])
 
   function syncMention(text: string, caret: number) {
     if (filesRef.current.length < 2) {
@@ -182,15 +188,16 @@ export function Composer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      if (!busy && prompt.trim()) onSubmit()
+      if (!busy && (prompt.trim() || allowEmpty)) onSubmit()
     }
   }
 
   const showMention = mention !== null && files.length >= 2
+  const editing = Boolean(editMode)
 
   return (
     <div className="mx-auto w-full max-w-3xl">
-      {files.length > 0 && (
+      {files.length > 0 && !editing && (
         <div className="mb-2 flex flex-wrap gap-2 px-1">
           {files.map((file, index) => (
             <Attachment
@@ -255,60 +262,40 @@ export function Composer({
             className="max-h-52 min-h-12 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[15px] leading-6 text-fg outline-none placeholder:text-muted"
           />
           <div className="flex items-center gap-1 px-2 pb-1">
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                addFiles(e.target.files)
-                e.target.value = ''
-              }}
-            />
-            <button
-              type="button"
-              className="grid h-9 w-9 place-items-center rounded-full text-muted transition hover:bg-white/8 hover:text-fg"
-              aria-label="上传参考图"
-              onClick={() => fileRef.current?.click()}
-            >
-              <ImagePlus className="h-5 w-5" aria-hidden="true" />
-            </button>
-            <select
-              value={aspect}
-              aria-label="画面比例"
-              onChange={(e) => onAspect(e.target.value as Aspect)}
-              className="h-9 rounded-full bg-transparent px-2 text-xs text-muted outline-none hover:text-fg"
-            >
-              {ASPECTS.map((item) => (
-                <option key={item} value={item} className="bg-bg">
-                  {item}
-                </option>
-              ))}
-            </select>
-            <select
-              value={quality}
-              aria-label="清晰度"
-              onChange={(e) => onQuality(e.target.value as Quality)}
-              className="h-9 rounded-full bg-transparent px-2 text-xs text-muted outline-none hover:text-fg"
-            >
-              <option value="1k" className="bg-bg">
-                1K
-              </option>
-              <option value="2k" className="bg-bg">
-                2K
-              </option>
-            </select>
-            <button
-              type="button"
-              onClick={() => onTransparent(!transparent)}
-              className={`h-9 rounded-full px-3 text-xs transition ${
-                transparent ? 'bg-white text-bg' : 'text-muted hover:bg-white/8 hover:text-fg'
-              }`}
-              aria-pressed={transparent}
-            >
-              透明底
-            </button>
+            {!editing && (
+              <>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    addFiles(e.target.files)
+                    e.target.value = ''
+                  }}
+                />
+                <button
+                  type="button"
+                  className="grid h-9 w-9 place-items-center rounded-full text-muted transition hover:bg-white/8 hover:text-fg"
+                  aria-label="上传参考图"
+                  onClick={() => fileRef.current?.click()}
+                >
+                  <ImagePlus className="h-5 w-5" aria-hidden="true" />
+                </button>
+                <SizePicker aspect={aspect} quality={quality} onAspect={onAspect} onQuality={onQuality} />
+                <button
+                  type="button"
+                  onClick={() => onTransparent(!transparent)}
+                  className={`h-9 rounded-full px-3 text-xs transition ${
+                    transparent ? 'bg-white text-bg' : 'text-muted hover:bg-white/8 hover:text-fg'
+                  }`}
+                  aria-pressed={transparent}
+                >
+                  透明底
+                </button>
+              </>
+            )}
             <div className="ml-auto">
               {busy ? (
                 <button
@@ -323,7 +310,7 @@ export function Composer({
                 <button
                   type="button"
                   onClick={onSubmit}
-                  disabled={disabled || !prompt.trim()}
+                  disabled={disabled || (!prompt.trim() && !allowEmpty)}
                   className="grid h-9 w-9 place-items-center rounded-full bg-fg text-bg transition disabled:cursor-not-allowed disabled:opacity-30"
                   aria-label="发送"
                 >
@@ -335,7 +322,13 @@ export function Composer({
         </div>
       </div>
       <p className="mt-2 text-center text-[11px] text-muted">
-        {files.length > 1 ? '输入 @ 可从当前参考图中选择' : 'Qwen-Image-2.1 · 本地 ComfyUI · 后续消息会基于上一张图继续编辑'}
+        {editing
+          ? editMode === 'erase'
+            ? '涂抹要改的区域，可留空描述以擦除填回'
+            : '先扩展四边，可留空描述以自然外延'
+          : files.length > 1
+            ? '输入 @ 可从当前参考图中选择'
+            : 'Qwen-Image-2.1 · 本地 ComfyUI · 后续消息会基于上一张图继续编辑'}
       </p>
     </div>
   )

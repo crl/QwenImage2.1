@@ -62,6 +62,13 @@ export type StudioEvent =
   | { type: 'done'; message: Message; images: ImageRecord[] }
   | { type: 'error'; message_id: string; error: string; message?: Message }
 
-export const ASPECTS = ['1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16'] as const
+export const ASPECTS = ['auto', '1:1', '9:16', '16:9', '3:4', '4:3', '3:2', '2:3', '4:5', '5:4', '21:9'] as const
 export type Aspect = (typeof ASPECTS)[number]
-export type Quality = '1k' | '2k'
+export type Quality = '1k' | '2k' | '4k'
+export type EditMode = 'erase' | 'outpaint' | 'enhance'
+export type Pads = {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
