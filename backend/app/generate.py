@@ -13,7 +13,7 @@ from .comfy import ComfyClient, ComfyError, collect_output_images, new_ids
 from .config import IMAGES_DIR, QUALITY_BASE, pixel_size, wrap_transparent
 from .hub import EventHub
 from .store import Store
-from .workflows import build_edit, build_masked_edit, build_t2i
+from .workflows import build_edit, build_masked_edit, build_outpaint_edit, build_seedvr2_upscale, build_t2i
 
 jobs: dict[str, str] = {}
 
@@ -26,8 +26,9 @@ DISPLAY_PROMPTS = {
 ERASE_DEFAULT = (
     "去掉标记的红色区域中的内容，并按周围场景自然填补。未标记区域保持不变。"
 )
-OUTPAINT_DEFAULT = (
-    "将画面自然延伸到灰色填充的边缘区域，中心原图保持不变，匹配光影、透视和风格。"
+OUTPAINT_NEGATIVE = (
+    "blank bars, letterbox, pillarbox, solid color borders, red overlay, gray padding, "
+    "empty margins, stretched edges, repeating stripes"
 )
 ENHANCE_PROMPT = (
     "提升这张图的清晰度和细节，保持构图、人物身份、光影、颜色和内容完全不变。"
@@ -49,13 +50,60 @@ def model_prompt(edit_mode: str | None, prompt: str) -> str:
         if text:
             return f"只修改标记的红色区域：{text}。未标记区域保持不变。"
         return ERASE_DEFAULT
-    if edit_mode == "outpaint":
-        if text:
-            return f"将画面延伸到灰色边缘：{text}。中心原图保持不变。"
-        return OUTPAINT_DEFAULT
     if edit_mode == "enhance":
         return ENHANCE_PROMPT
     return text
+
+
+def outpaint_model_prompt(prompt: str, pads: tuple[int, int, int, int] | None) -> str:
+    left, top, right, bottom = pads or (0, 0, 0, 0)
+    sides: list[str] = []
+    if left:
+        sides.append("左")
+    if right:
+        sides.append("右")
+    if top:
+        sides.append("上")
+    if bottom:
+        sides.append("下")
+    where = "、".join(sides) or "四周"
+    extra = prompt.strip()
+    extra_clause = f"额外要求：{extra}。" if extra else ""
+    return (
+        f"把这张图向{where}方向扩展，补全画面外连续的天空、云层、环境和光影。"
+        f"{extra_clause}"
+        "保持人物、姿态、构图、光影和画风完全不变，主体仍在画面中心。"
+        "不要出现空白、纯色色块、边框、拉伸或重复条纹。"
+    )
+
+
+def _upscale_multiplier(width: int, height: int, max_side: int = 2048) -> float:
+    longest = max(width, height, 1)
+    return max(0.25, round(min(4.0, max_side / longest), 2))
+
+
+def _fit_size(width: int, height: int, max_side: int = 2048) -> tuple[int, int]:
+    longest = max(width, height)
+    if longest > max_side:
+        scale = max_side / longest
+        width = round(width * scale)
+        height = round(height * scale)
+    return (
+        max(32, round(width / 32) * 32),
+        max(32, round(height / 32) * 32),
+    )
+
+
+def _feather_lock_mask(size: tuple[int, int], feather: int = 40) -> Image.Image:
+    width, height = size
+    if feather <= 0 or width < 8 or height < 8:
+        return Image.new("RGB", size, (255, 255, 255))
+    feather = max(1, min(feather, width // 4, height // 4))
+    inner = Image.new("L", (width, height), 0)
+    white = Image.new("L", (max(1, width - 2 * feather), max(1, height - 2 * feather)), 255)
+    inner.paste(white, (feather, feather))
+    mask = inner.filter(ImageFilter.GaussianBlur(feather / 2))
+    return Image.merge("RGB", (mask, mask, mask))
 
 
 def _png_bytes(image: Image.Image) -> bytes:
@@ -88,17 +136,45 @@ def pad_image(
     bottom: int,
     *,
     fit: bool = True,
+    fill: str = "gray",
 ) -> tuple[Image.Image, Image.Image]:
     width, height = source.size
     left, top, right, bottom = [max(0, (value // 32) * 32) for value in (left, top, right, bottom)]
-    canvas = Image.new("RGB", (width + left + right, height + top + bottom), (128, 128, 128))
     rgb = source.convert("RGB")
-    canvas.paste(rgb, (left, top))
-    mask = Image.new("RGB", canvas.size, (255, 255, 255))
+    canvas_size = (width + left + right, height + top + bottom)
+    if fill == "edge":
+        canvas = _edge_padded(rgb, left, top, right, bottom)
+    else:
+        canvas = Image.new("RGB", canvas_size, (128, 128, 128))
+        canvas.paste(rgb, (left, top))
+    mask = Image.new("RGB", canvas_size, (255, 255, 255))
     mask.paste(Image.new("RGB", (width, height), (0, 0, 0)), (left, top))
     if fit:
         return _fit_max_side(canvas, mask)
     return canvas, mask
+
+
+def _edge_padded(rgb: Image.Image, left: int, top: int, right: int, bottom: int) -> Image.Image:
+    width, height = rgb.size
+    canvas = Image.new("RGB", (width + left + right, height + top + bottom))
+    if left:
+        canvas.paste(rgb.crop((0, 0, 1, height)).resize((left, height)), (0, top))
+    if right:
+        canvas.paste(rgb.crop((width - 1, 0, width, height)).resize((right, height)), (left + width, top))
+    if top:
+        canvas.paste(rgb.crop((0, 0, width, 1)).resize((width, top)), (left, 0))
+    if bottom:
+        canvas.paste(rgb.crop((0, height - 1, width, height)).resize((width, bottom)), (left, top + height))
+    if left and top:
+        canvas.paste(Image.new("RGB", (left, top), rgb.getpixel((0, 0))), (0, 0))
+    if right and top:
+        canvas.paste(Image.new("RGB", (right, top), rgb.getpixel((width - 1, 0))), (left + width, 0))
+    if left and bottom:
+        canvas.paste(Image.new("RGB", (left, bottom), rgb.getpixel((0, height - 1))), (0, top + height))
+    if right and bottom:
+        canvas.paste(Image.new("RGB", (right, bottom), rgb.getpixel((width - 1, height - 1))), (left + width, top + height))
+    canvas.paste(rgb, (left, top))
+    return canvas
 
 
 def edit_preview_image(
@@ -115,7 +191,7 @@ def edit_preview_image(
         left, top, right, bottom = pads or (0, 0, 0, 0)
         if left + top + right + bottom <= 0:
             return None
-        padded, _ = pad_image(source, left, top, right, bottom, fit=False)
+        padded, _ = pad_image(source, left, top, right, bottom, fit=False, fill="gray")
         return padded
     return None
 
@@ -162,7 +238,10 @@ async def run_generation(
             conversation_id,
             {"type": "progress", "message_id": message_id, "value": 0, "max": steps},
         )
-        final_prompt = model_prompt(edit_mode, prompt)
+        if edit_mode == "outpaint":
+            final_prompt = outpaint_model_prompt(prompt, pads)
+        else:
+            final_prompt = model_prompt(edit_mode, prompt)
         if transparent:
             final_prompt = wrap_transparent(final_prompt)
 
@@ -323,8 +402,13 @@ async def _tool_workflow(
     steps: int,
 ) -> dict[str, Any]:
     if edit_mode == "enhance":
-        name = await client.upload_image(_png_bytes(source.convert("RGB")), f"{uuid.uuid4().hex}.png")
-        return build_edit(prompt, [name], seed=seed, steps=steps, resolution=2048)
+        rgb = source.convert("RGB")
+        name = await client.upload_image(_png_bytes(rgb), f"{uuid.uuid4().hex}.png")
+        return build_seedvr2_upscale(
+            name,
+            seed=seed,
+            multiplier=_upscale_multiplier(*rgb.size),
+        )
 
     if edit_mode == "erase":
         if not mask_bytes:
@@ -351,15 +435,30 @@ async def _tool_workflow(
     left, top, right, bottom = pads or (0, 0, 0, 0)
     if left + top + right + bottom <= 0:
         raise ComfyError("请先扩展画布")
-    padded, mask_rgb = pad_image(source, left, top, right, bottom)
-    padded_name = await client.upload_image(_png_bytes(padded), f"{uuid.uuid4().hex}.png")
-    mask_name = await client.upload_image(_png_bytes(mask_rgb), f"{uuid.uuid4().hex}.png")
-    return build_masked_edit(
+    width, height = source.size
+    left, top, right, bottom = [max(0, (value // 32) * 32) for value in (left, top, right, bottom)]
+    full_w, full_h = width + left + right, height + top + bottom
+    canvas_w, canvas_h = _fit_size(full_w, full_h)
+    scale_x = canvas_w / full_w if full_w else 1
+    scale_y = canvas_h / full_h if full_h else 1
+    paste_x = round(left * scale_x)
+    paste_y = round(top * scale_y)
+    center = source.convert("RGB").resize(
+        (max(1, round(width * scale_x)), max(1, round(height * scale_y))),
+        Image.Resampling.LANCZOS,
+    )
+    canvas = Image.new("RGB", (canvas_w, canvas_h), (0, 0, 0))
+    original_name = await client.upload_image(_png_bytes(center), f"{uuid.uuid4().hex}.png")
+    canvas_name = await client.upload_image(_png_bytes(canvas), f"{uuid.uuid4().hex}.png")
+    mask_name = await client.upload_image(_png_bytes(_feather_lock_mask(center.size)), f"{uuid.uuid4().hex}.png")
+    return build_outpaint_edit(
         prompt,
-        vision_name=padded_name,
-        original_name=padded_name,
+        original_name=original_name,
+        canvas_name=canvas_name,
         mask_name=mask_name,
         seed=seed,
         steps=steps,
-        resolution=0,
+        paste_x=paste_x,
+        paste_y=paste_y,
+        negative_prompt=OUTPAINT_NEGATIVE,
     )
