@@ -1,4 +1,4 @@
-import type { Conversation, ConversationSummary, EditMode, Health, ImageRecord, Message, Pads } from './types'
+import type { CanvasDoc, CanvasEdge, CanvasItem, CanvasNodeKind, CanvasSummary, CanvasViewport, Conversation, ConversationSummary, EditMode, Health, ImageRecord, MediaMode, Message, Pads } from './types'
 
 async function parse<T>(res: Promise<Response>): Promise<T> {
   const response = await res
@@ -71,6 +71,9 @@ export function sendMessage(
     quality: string
     transparent: boolean
     files: File[]
+    mediaMode?: MediaMode
+    videoSeconds?: number
+    chain?: boolean
     editMode?: EditMode
     sourceImageId?: string
     mask?: Blob | null
@@ -82,6 +85,11 @@ export function sendMessage(
   body.append('aspect', payload.aspect)
   body.append('quality', payload.quality)
   body.append('transparent', payload.transparent ? 'true' : 'false')
+  body.append('media_mode', payload.mediaMode || 'image')
+  if (payload.mediaMode === 'video') {
+    body.append('video_seconds', String(payload.videoSeconds ?? 5))
+  }
+  if (payload.chain === false) body.append('chain', 'false')
   payload.files.forEach((file) => body.append('files', file))
   if (payload.editMode) body.append('edit_mode', payload.editMode)
   if (payload.sourceImageId) body.append('source_image_id', payload.sourceImageId)
@@ -105,6 +113,110 @@ export function interrupt(conversationId?: string) {
       body: JSON.stringify({ conversation_id: conversationId }),
     }),
   )
+}
+
+export function listCanvases() {
+  return parse<CanvasSummary[]>(fetch('/api/canvases'))
+}
+
+export function createCanvas(title?: string) {
+  return parse<CanvasDoc>(
+    fetch('/api/canvases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title || '未命名画布' }),
+    }),
+  )
+}
+
+export function getCanvas(id: string) {
+  return parse<CanvasDoc>(fetch(`/api/canvases/${id}`))
+}
+
+export function updateCanvas(id: string, patch: { title?: string; viewport?: CanvasViewport }) {
+  return parse<CanvasDoc>(
+    fetch(`/api/canvases/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  )
+}
+
+export function deleteCanvas(id: string) {
+  return parse<{ ok: boolean; id: string }>(fetch(`/api/canvases/${id}`, { method: 'DELETE' }))
+}
+
+export function addCanvasItem(
+  id: string,
+  item: {
+    x: number
+    y: number
+    width: number
+    height: number
+    image_id?: string | null
+    node_kind?: CanvasNodeKind
+    title?: string
+  },
+) {
+  return parse<CanvasItem>(
+    fetch(`/api/canvases/${id}/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item),
+    }),
+  )
+}
+
+export function updateCanvasItem(
+  id: string,
+  itemId: string,
+  patch: {
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    z?: number
+    image_id?: string
+    node_kind?: CanvasNodeKind
+    title?: string
+  },
+) {
+  return parse<CanvasItem>(
+    fetch(`/api/canvases/${id}/items/${itemId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  )
+}
+
+export function deleteCanvasItem(id: string, itemId: string) {
+  return parse<{ ok: boolean; id: string }>(
+    fetch(`/api/canvases/${id}/items/${itemId}`, { method: 'DELETE' }),
+  )
+}
+
+export function addCanvasEdge(id: string, edge: { from_item_id: string; to_item_id: string }) {
+  return parse<CanvasEdge>(
+    fetch(`/api/canvases/${id}/edges`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(edge),
+    }),
+  )
+}
+
+export function deleteCanvasEdge(id: string, edgeId: string) {
+  return parse<{ ok: boolean; id: string }>(
+    fetch(`/api/canvases/${id}/edges/${edgeId}`, { method: 'DELETE' }),
+  )
+}
+
+export function uploadCanvasMedia(id: string, file: File) {
+  const body = new FormData()
+  body.append('file', file)
+  return parse<ImageRecord>(fetch(`/api/canvases/${id}/uploads`, { method: 'POST', body }))
 }
 
 export function getLibrary() {

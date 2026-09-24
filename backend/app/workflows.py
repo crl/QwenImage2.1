@@ -284,91 +284,134 @@ def build_outpaint_edit(
     return graph
 
 
-SEEDVR2_UNET = "seedvr2_7b_int8_convrot.safetensors"
-SEEDVR2_VAE = "seedvr2_ema_vae_fp16.safetensors"
-
-
-def build_seedvr2_upscale(
-    image_name: str,
+def build_hunyuan_video(
+    prompt: str,
     *,
+    width: int,
+    height: int,
     seed: int,
-    multiplier: float,
+    first_frame_name: str | None = None,
+    length: int = 121,
+    steps: int = 20,
 ) -> dict[str, Any]:
-    return {
-        "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
-        "2": {
-            "class_type": "JoinImageWithAlpha",
-            "inputs": {"image": ["1", 0], "alpha": ["1", 1]},
+    """HunyuanVideo 1.5 720p graph. Skips the template's 1080p super-resolution stage."""
+    from .config import (
+        HUNYUAN_CFG,
+        HUNYUAN_CLIP_1,
+        HUNYUAN_CLIP_2,
+        HUNYUAN_CLIP_VISION,
+        HUNYUAN_FPS,
+        HUNYUAN_SHIFT,
+        HUNYUAN_UNET,
+        HUNYUAN_VAE,
+    )
+
+    graph: dict[str, Any] = {
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": HUNYUAN_UNET, "weight_dtype": "default"},
         },
-        "3": {
-            "class_type": "ResizeImageMaskNode",
+        "2": {
+            "class_type": "DualCLIPLoader",
             "inputs": {
-                "input": ["2", 0],
-                "resize_type": "scale by multiplier",
-                "resize_type.multiplier": multiplier,
-                "scale_method": "lanczos",
+                "clip_name1": HUNYUAN_CLIP_1,
+                "clip_name2": HUNYUAN_CLIP_2,
+                "type": "hunyuan_video_15",
+                "device": "default",
             },
         },
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": HUNYUAN_VAE}},
         "4": {
-            "class_type": "SeedVR2Preprocess",
-            "inputs": {"resized_images": ["3", 0]},
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["2", 0], "text": prompt},
         },
-        "5": {"class_type": "VAELoader", "inputs": {"vae_name": SEEDVR2_VAE}},
+        "5": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["2", 0], "text": ""},
+        },
         "6": {
-            "class_type": "UNETLoader",
-            "inputs": {"unet_name": SEEDVR2_UNET, "weight_dtype": "default"},
+            "class_type": "HunyuanVideo15ImageToVideo",
+            "inputs": {
+                "positive": ["4", 0],
+                "negative": ["5", 0],
+                "vae": ["3", 0],
+                "width": width,
+                "height": height,
+                "length": length,
+                "batch_size": 1,
+            },
         },
         "7": {
-            "class_type": "VAEEncodeTiled",
-            "inputs": {
-                "pixels": ["4", 0],
-                "vae": ["5", 0],
-                "tile_size": 512,
-                "overlap": 128,
-                "temporal_size": 4096,
-                "temporal_overlap": 8,
-            },
+            "class_type": "ModelSamplingSD3",
+            "inputs": {"model": ["1", 0], "shift": HUNYUAN_SHIFT},
         },
         "8": {
-            "class_type": "SeedVR2Conditioning",
-            "inputs": {"model": ["6", 0], "vae_conditioning": ["7", 0]},
-        },
-        "9": {
-            "class_type": "KSampler",
+            "class_type": "CFGGuider",
             "inputs": {
-                "model": ["6", 0],
-                "seed": seed,
-                "steps": 1,
-                "cfg": 1,
-                "sampler_name": "euler",
-                "scheduler": "simple",
-                "positive": ["8", 0],
-                "negative": ["8", 1],
-                "latent_image": ["7", 0],
-                "denoise": 1,
+                "model": ["7", 0],
+                "positive": ["6", 0],
+                "negative": ["6", 1],
+                "cfg": HUNYUAN_CFG,
             },
         },
+        "9": {
+            "class_type": "KSamplerSelect",
+            "inputs": {"sampler_name": "euler"},
+        },
         "10": {
-            "class_type": "VAEDecodeTiled",
+            "class_type": "BasicScheduler",
             "inputs": {
-                "samples": ["9", 0],
-                "vae": ["5", 0],
-                "tile_size": 512,
-                "overlap": 128,
-                "temporal_size": 4096,
-                "temporal_overlap": 8,
+                "model": ["1", 0],
+                "scheduler": "simple",
+                "steps": steps,
+                "denoise": 1.0,
             },
         },
         "11": {
-            "class_type": "SeedVR2PostProcessing",
+            "class_type": "SamplerCustomAdvanced",
             "inputs": {
-                "images": ["10", 0],
-                "original_resized_images": ["3", 0],
-                "color_correction_method": "none",
+                "noise": ["16", 0],
+                "guider": ["8", 0],
+                "sampler": ["9", 0],
+                "sigmas": ["10", 0],
+                "latent_image": ["6", 2],
             },
         },
         "12": {
-            "class_type": "SaveImage",
-            "inputs": {"images": ["11", 0], "filename_prefix": "QwenStudioUpscale"},
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["11", 0], "vae": ["3", 0]},
+        },
+        "14": {
+            "class_type": "CreateVideo",
+            "inputs": {
+                "images": ["12", 0],
+                "fps": float(HUNYUAN_FPS),
+            },
+        },
+        "15": {
+            "class_type": "SaveVideo",
+            "inputs": {
+                "video": ["14", 0],
+                "filename_prefix": "QwenStudioVideo",
+                "format": "auto",
+                "format.codec": "auto",
+            },
+        },
+        "16": {
+            "class_type": "RandomNoise",
+            "inputs": {"noise_seed": seed},
         },
     }
+    if first_frame_name:
+        graph["20"] = {"class_type": "LoadImage", "inputs": {"image": first_frame_name}}
+        graph["21"] = {
+            "class_type": "CLIPVisionLoader",
+            "inputs": {"clip_name": HUNYUAN_CLIP_VISION},
+        }
+        graph["22"] = {
+            "class_type": "CLIPVisionEncode",
+            "inputs": {"clip_vision": ["21", 0], "image": ["20", 0], "crop": "center"},
+        }
+        graph["6"]["inputs"]["start_image"] = ["20", 0]
+        graph["6"]["inputs"]["clip_vision_output"] = ["22", 0]
+    return graph

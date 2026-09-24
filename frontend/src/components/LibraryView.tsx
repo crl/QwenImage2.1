@@ -29,7 +29,11 @@ export function LibraryView({ images, onOpen, onDelete }: Props) {
               onClick={() => onOpen(image)}
               className="checker block w-full overflow-hidden rounded-2xl"
             >
-              <img src={imageUrl(image.id)} alt={image.prompt || '生成图像'} className="w-full object-cover" />
+              {image.media_type === 'video' ? (
+                <video src={imageUrl(image.id)} className="w-full object-cover" muted playsInline preload="metadata" />
+              ) : (
+                <img src={imageUrl(image.id)} alt={image.prompt || '生成图像'} className="w-full object-cover" />
+              )}
             </button>
             <button
               type="button"

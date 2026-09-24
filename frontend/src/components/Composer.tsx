@@ -1,24 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, ImagePlus, Square, X } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
-import { type Aspect, type EditMode, type Quality } from '../types'
+import { type Aspect, type EditMode, type MediaMode, type Quality, type VideoQuality } from '../types'
+import { DurationPicker } from './DurationPicker'
 import { SizePicker } from './SizePicker'
 
 type Props = {
   prompt: string
   aspect: Aspect
   quality: Quality
+  videoQuality: VideoQuality
   transparent: boolean
+  mediaMode: MediaMode
+  videoSeconds: number
   files: File[]
   busy: boolean
   disabled?: boolean
   placeholder?: string
   editMode?: EditMode | null
   allowEmpty?: boolean
+  lockMediaMode?: boolean
   onPrompt: (value: string) => void
   onAspect: (value: Aspect) => void
   onQuality: (value: Quality) => void
+  onVideoQuality: (value: VideoQuality) => void
   onTransparent: (value: boolean) => void
+  onMediaMode: (value: MediaMode) => void
+  onVideoSeconds: (value: number) => void
   onFiles: (files: File[]) => void
   onSubmit: () => void
   onStop: () => void
@@ -33,17 +41,24 @@ export function Composer({
   prompt,
   aspect,
   quality,
+  videoQuality,
   transparent,
+  mediaMode,
+  videoSeconds,
   files,
   busy,
   disabled,
   placeholder = '描述你想生成或修改的图像',
   editMode,
   allowEmpty = false,
+  lockMediaMode = false,
   onPrompt,
   onAspect,
   onQuality,
+  onVideoQuality,
   onTransparent,
+  onMediaMode,
+  onVideoSeconds,
   onFiles,
   onSubmit,
   onStop,
@@ -264,6 +279,36 @@ export function Composer({
           <div className="flex items-center gap-1 px-2 pb-1">
             {!editing && (
               <>
+                <div className="inline-flex items-center rounded-full border border-border bg-panel p-0.5">
+                  {(!lockMediaMode || mediaMode === 'image') && (
+                    <button
+                      type="button"
+                      className={`h-8 rounded-full px-3 text-xs transition ${
+                        mediaMode === 'image' ? 'bg-white/16 text-fg' : 'text-muted hover:text-fg'
+                      }`}
+                      aria-pressed={mediaMode === 'image'}
+                      onClick={() => {
+                        if (!lockMediaMode) onMediaMode('image')
+                      }}
+                    >
+                      生图
+                    </button>
+                  )}
+                  {(!lockMediaMode || mediaMode === 'video') && (
+                    <button
+                      type="button"
+                      className={`h-8 rounded-full px-3 text-xs transition ${
+                        mediaMode === 'video' ? 'bg-white/16 text-fg' : 'text-muted hover:text-fg'
+                      }`}
+                      aria-pressed={mediaMode === 'video'}
+                      onClick={() => {
+                        if (!lockMediaMode) onMediaMode('video')
+                      }}
+                    >
+                      生视频
+                    </button>
+                  )}
+                </div>
                 <input
                   ref={fileRef}
                   type="file"
@@ -283,17 +328,30 @@ export function Composer({
                 >
                   <ImagePlus className="h-5 w-5" aria-hidden="true" />
                 </button>
-                <SizePicker aspect={aspect} quality={quality} onAspect={onAspect} onQuality={onQuality} />
-                <button
-                  type="button"
-                  onClick={() => onTransparent(!transparent)}
-                  className={`h-9 rounded-full px-3 text-xs transition ${
-                    transparent ? 'bg-white text-bg' : 'text-muted hover:bg-white/8 hover:text-fg'
-                  }`}
-                  aria-pressed={transparent}
-                >
-                  透明底
-                </button>
+                <SizePicker
+                  aspect={aspect}
+                  quality={quality}
+                  videoQuality={videoQuality}
+                  videoMode={mediaMode === 'video'}
+                  onAspect={onAspect}
+                  onQuality={onQuality}
+                  onVideoQuality={onVideoQuality}
+                />
+                {mediaMode === 'video' && (
+                  <DurationPicker seconds={videoSeconds} onSeconds={onVideoSeconds} />
+                )}
+                {mediaMode === 'image' && (
+                  <button
+                    type="button"
+                    onClick={() => onTransparent(!transparent)}
+                    className={`h-9 rounded-full px-3 text-xs transition ${
+                      transparent ? 'bg-white text-bg' : 'text-muted hover:bg-white/8 hover:text-fg'
+                    }`}
+                    aria-pressed={transparent}
+                  >
+                    透明底
+                  </button>
+                )}
               </>
             )}
             <div className="ml-auto">
@@ -326,9 +384,11 @@ export function Composer({
           ? editMode === 'erase'
             ? '涂抹要改的区域，可留空描述以擦除填回'
             : '先扩展四边，可留空描述以自然外延'
-          : files.length > 1
-            ? '输入 @ 可从当前参考图中选择'
-            : 'Qwen-Image-2.1 · 本地 ComfyUI · 后续消息会基于上一张图继续编辑'}
+          : mediaMode === 'video'
+            ? 'HunyuanVideo 1.5 · 有参考图或上一张图时作首帧，否则纯文生视频'
+            : files.length > 1
+              ? '输入 @ 可从当前参考图中选择'
+              : 'Qwen-Image-2.1 · 本地 ComfyUI · 后续消息会基于上一张图继续编辑'}
       </p>
     </div>
   )

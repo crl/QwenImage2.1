@@ -158,11 +158,38 @@ async def collect_output_images(client: ComfyClient, prompt_id: str) -> list[byt
     images: list[bytes] = []
     for node_out in outputs.values():
         for image in node_out.get("images") or []:
+            name = image.get("filename") or ""
+            if name.lower().endswith((".mp4", ".webm", ".mkv", ".mov")):
+                continue
             images.append(
                 await client.view_image(
-                    image["filename"],
+                    name,
                     image.get("subfolder") or "",
                     image.get("type") or "output",
                 )
             )
     return images
+
+
+async def collect_output_videos(client: ComfyClient, prompt_id: str) -> list[tuple[str, bytes]]:
+    history = await client.get_history(prompt_id)
+    record = history.get(prompt_id) or {}
+    outputs = record.get("outputs") or {}
+    videos: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    for node_out in outputs.values():
+        for key in ("gifs", "videos", "images"):
+            for item in node_out.get(key) or []:
+                name = item.get("filename") or ""
+                lower = name.lower()
+                if not lower.endswith((".mp4", ".webm", ".mkv", ".mov")):
+                    continue
+                subfolder = item.get("subfolder") or ""
+                folder_type = item.get("type") or "output"
+                token = f"{folder_type}:{subfolder}:{name}"
+                if token in seen:
+                    continue
+                seen.add(token)
+                data = await client.view_image(name, subfolder, folder_type)
+                videos.append((name, data))
+    return videos

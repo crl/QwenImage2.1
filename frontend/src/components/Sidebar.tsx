@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { Archive, ArchiveRestore, ChevronDown, ImageIcon, Pencil, Plus, Trash2, WifiOff, type LucideIcon } from 'lucide-react'
-import type { ConversationSummary, Health } from '../types'
+import { Archive, ArchiveRestore, ChevronDown, Frame, ImageIcon, Pencil, Plus, Trash2, WifiOff, type LucideIcon } from 'lucide-react'
+import type { CanvasSummary, ConversationSummary, Health } from '../types'
 
 type RowAction = {
   label: string
@@ -12,7 +12,10 @@ type RowAction = {
 type Props = {
   conversations: ConversationSummary[]
   archivedConversations: ConversationSummary[]
+  canvases: CanvasSummary[]
   activeId?: string
+  activeCanvasId?: string
+  libraryActive?: boolean
   health: Health | null
   onNew: () => void
   onOpenLibrary: () => void
@@ -21,12 +24,19 @@ type Props = {
   onUnarchive: (id: string) => void
   onDeleteArchived: (item: ConversationSummary) => void
   onRename: (id: string, title: string) => void
+  onNewCanvas: () => void
+  onOpenCanvas: (id: string) => void
+  onRenameCanvas: (id: string, title: string) => void
+  onDeleteCanvas: (item: CanvasSummary) => void
 }
 
 export function Sidebar({
   conversations,
   archivedConversations,
+  canvases,
   activeId,
+  activeCanvasId,
+  libraryActive,
   health,
   onNew,
   onOpenLibrary,
@@ -35,6 +45,10 @@ export function Sidebar({
   onUnarchive,
   onDeleteArchived,
   onRename,
+  onNewCanvas,
+  onOpenCanvas,
+  onRenameCanvas,
+  onDeleteCanvas,
 }: Props) {
   const [showArchived, setShowArchived] = useState(false)
 
@@ -65,7 +79,7 @@ export function Sidebar({
           type="button"
           onClick={onOpenLibrary}
           className={`mt-1 flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm transition hover:bg-white/5 ${
-            !activeId ? 'bg-white/8 text-fg' : 'text-muted'
+            libraryActive ? 'bg-white/8 text-fg' : 'text-muted'
           }`}
         >
           <ImageIcon className="h-4 w-4" aria-hidden="true" />
@@ -73,6 +87,35 @@ export function Sidebar({
         </button>
       </div>
       <div className="mt-4 min-h-0 flex-1 overflow-y-auto px-2">
+        <div className="mb-4 flex items-center px-2 pb-1">
+          <p className="text-xs font-medium tracking-wide text-muted uppercase">画布</p>
+          <button
+            type="button"
+            aria-label="新画布"
+            title="新画布"
+            onClick={onNewCanvas}
+            className="ml-auto grid h-6 w-6 place-items-center rounded-md text-muted transition hover:bg-white/10 hover:text-fg"
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </div>
+        {canvases.length === 0 ? (
+          <p className="px-2 pb-4 text-sm text-muted">还没有画布</p>
+        ) : (
+          <ul className="mb-4 space-y-0.5">
+            {canvases.map((item) => (
+              <ConversationRow
+                key={item.id}
+                item={item}
+                active={activeCanvasId === item.id}
+                actions={[{ label: '删除画布', icon: Trash2, onClick: () => onDeleteCanvas(item), danger: true }]}
+                onOpen={() => onOpenCanvas(item.id)}
+                onRename={(title) => onRenameCanvas(item.id, title)}
+                icon={Frame}
+              />
+            ))}
+          </ul>
+        )}
         <p className="px-2 pb-2 text-xs font-medium tracking-wide text-muted uppercase">对话</p>
         {conversations.length === 0 ? (
           <p className="px-2 text-sm text-muted">还没有对话</p>
@@ -143,12 +186,14 @@ function ConversationRow({
   actions,
   onOpen,
   onRename,
+  icon: Icon,
 }: {
-  item: ConversationSummary
+  item: { id: string; title: string }
   active: boolean
   actions: RowAction[]
   onOpen: () => void
   onRename: (title: string) => void
+  icon?: LucideIcon
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(item.title)
@@ -224,11 +269,12 @@ function ConversationRow({
               event.stopPropagation()
               startRename()
             }}
-            className={`w-full truncate rounded-lg py-2 pl-3 text-left text-sm transition hover:bg-white/5 ${
+            className={`flex w-full items-center gap-2 truncate rounded-lg py-2 pl-3 text-left text-sm transition hover:bg-white/5 ${
               actionCount > 2 ? 'pr-[4.75rem]' : actionCount > 1 ? 'pr-16' : 'pr-9'
             } ${active ? 'bg-white/10 text-fg' : 'text-muted'}`}
           >
-            {item.title}
+            {Icon && <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+            <span className="truncate">{item.title}</span>
           </button>
           <div className="absolute top-1/2 right-1 flex -translate-y-1/2">
             <button

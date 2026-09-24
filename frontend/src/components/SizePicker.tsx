@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronUp } from 'lucide-react'
-import { ASPECTS, type Aspect, type Quality } from '../types'
+import { ASPECTS, type Aspect, type Quality, type VideoQuality } from '../types'
 
 const QUALITIES: { id: Quality; label: string }[] = [
   { id: '1k', label: '1K' },
@@ -8,14 +8,30 @@ const QUALITIES: { id: Quality; label: string }[] = [
   { id: '4k', label: '4K' },
 ]
 
+const VIDEO_QUALITIES: { id: VideoQuality; label: string }[] = [
+  { id: '480p', label: '480p' },
+  { id: '720p', label: '720p' },
+]
+
 type Props = {
   aspect: Aspect
   quality: Quality
+  videoQuality?: VideoQuality
+  videoMode?: boolean
   onAspect: (value: Aspect) => void
   onQuality: (value: Quality) => void
+  onVideoQuality?: (value: VideoQuality) => void
 }
 
-export function SizePicker({ aspect, quality, onAspect, onQuality }: Props) {
+export function SizePicker({
+  aspect,
+  quality,
+  videoQuality = '720p',
+  videoMode = false,
+  onAspect,
+  onQuality,
+  onVideoQuality,
+}: Props) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -37,7 +53,9 @@ export function SizePicker({ aspect, quality, onAspect, onQuality }: Props) {
     }
   }, [open])
 
-  const qualityLabel = QUALITIES.find((item) => item.id === quality)?.label ?? '1K'
+  const qualityLabel = videoMode
+    ? (VIDEO_QUALITIES.find((item) => item.id === videoQuality)?.label ?? '720p')
+    : (QUALITIES.find((item) => item.id === quality)?.label ?? '1K')
   const aspectLabel = aspect === 'auto' ? '自适应' : aspect
 
   return (
@@ -45,20 +63,37 @@ export function SizePicker({ aspect, quality, onAspect, onQuality }: Props) {
       {open && (
         <div className="absolute bottom-full left-0 z-30 mb-2 w-[340px] rounded-2xl border border-border bg-panel p-3 shadow-[0_16px_40px_rgba(0,0,0,0.45)]">
           <p className="mb-2 text-xs text-muted">分辨率</p>
-          <div className="mb-3 grid grid-cols-3 gap-2">
-            {QUALITIES.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => onQuality(item.id)}
-                className={`h-9 rounded-full text-sm transition ${
-                  quality === item.id ? 'bg-white/16 text-fg ring-1 ring-white/40' : 'bg-white/6 text-muted hover:bg-white/10 hover:text-fg'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+          {videoMode ? (
+            <div className="mb-3 grid grid-cols-2 gap-2">
+              {VIDEO_QUALITIES.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onVideoQuality?.(item.id)}
+                  className={`h-9 rounded-full text-sm transition ${
+                    videoQuality === item.id ? 'bg-white/16 text-fg ring-1 ring-white/40' : 'bg-white/6 text-muted hover:bg-white/10 hover:text-fg'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="mb-3 grid grid-cols-3 gap-2">
+              {QUALITIES.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onQuality(item.id)}
+                  className={`h-9 rounded-full text-sm transition ${
+                    quality === item.id ? 'bg-white/16 text-fg ring-1 ring-white/40' : 'bg-white/6 text-muted hover:bg-white/10 hover:text-fg'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
           <p className="mb-2 text-xs text-muted">比例</p>
           <div className="grid grid-cols-5 gap-2">
             {ASPECTS.map((item) => (
@@ -86,9 +121,7 @@ export function SizePicker({ aspect, quality, onAspect, onQuality }: Props) {
         onClick={() => setOpen((value) => !value)}
       >
         <AspectGlyph ratio={aspect} />
-        <span>
-          {aspectLabel} · {qualityLabel}
-        </span>
+        <span>{`${aspectLabel} · ${qualityLabel}`}</span>
         <ChevronUp className={`h-3.5 w-3.5 transition ${open ? '' : 'rotate-180'}`} aria-hidden="true" />
       </button>
     </div>

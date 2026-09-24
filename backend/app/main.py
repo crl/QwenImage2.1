@@ -13,7 +13,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from .comfy import ComfyClient
-from .config import DEFAULT_STEPS, IMAGES_DIR, ensure_dirs
+from .config import DEFAULT_STEPS, IMAGES_DIR, VIDEO_DURATION_DEFAULT, VIDEO_DURATION_MAX, VIDEO_DURATION_MIN, ensure_dirs
 from .generate import display_prompt, edit_preview_image, jobs, run_generation
 from .hub import EventHub
 from .store import Store
@@ -44,6 +44,41 @@ class InterruptIn(BaseModel):
 class ConversationPatch(BaseModel):
     archived: bool | None = None
     title: str | None = None
+
+
+class CanvasIn(BaseModel):
+    title: str | None = None
+
+
+class CanvasPatch(BaseModel):
+    title: str | None = None
+    viewport: dict[str, float] | None = None
+
+
+class CanvasItemIn(BaseModel):
+    image_id: str | None = None
+    node_kind: str = "image"
+    title: str | None = None
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class CanvasItemPatch(BaseModel):
+    x: float | None = None
+    y: float | None = None
+    width: float | None = None
+    height: float | None = None
+    z: int | None = None
+    image_id: str | None = None
+    node_kind: str | None = None
+    title: str | None = None
+
+
+class CanvasEdgeIn(BaseModel):
+    from_item_id: str
+    to_item_id: str
 
 
 def serialize_message(message: dict[str, Any]) -> dict[str, Any]:
@@ -127,6 +162,9 @@ async def send_message(
     quality: str = Form("1k"),
     transparent: str = Form("false"),
     steps: int = Form(DEFAULT_STEPS),
+    media_mode: str = Form("image"),
+    video_seconds: int = Form(5),
+    chain: str = Form("true"),
     edit_mode: str = Form(""),
     source_image_id: str = Form(""),
     pad_left: int = Form(0),
@@ -139,7 +177,14 @@ async def send_message(
     conv = store.get_conversation(cid)
     if not conv:
         raise HTTPException(404, "对话不存在")
+    media = (media_mode or "image").strip().lower()
+    if media not in {"image", "video"}:
+        raise HTTPException(400, "不支持的生成模式")
+    duration = int(video_seconds or VIDEO_DURATION_DEFAULT)
+    duration = max(VIDEO_DURATION_MIN, min(VIDEO_DURATION_MAX, duration))
     mode = (edit_mode or "").strip().lower()
+    if media == "video" and mode:
+        raise HTTPException(400, "视频模式不支持图片编辑")
     if mode not in {"", "erase", "outpaint", "enhance"}:
         raise HTTPException(400, "不支持的编辑模式")
     if not prompt.strip() and not mode:
@@ -152,7 +197,7 @@ async def send_message(
         if not source_image_id.strip():
             raise HTTPException(400, "缺少要编辑的图片")
         source = store.get_image(source_image_id.strip())
-        if not source or source.get("conversation_id") != cid:
+        if not source:
             raise HTTPException(404, "要编辑的图片不存在")
         if mode == "enhance":
             quality = "2k"
@@ -176,16 +221,26 @@ async def send_message(
         raise HTTPException(400, "请先扩展画布")
 
     is_transparent = transparent.lower() in {"1", "true", "yes", "on"}
+    if media == "video":
+        is_transparent = False
+    use_chain = chain.lower() not in {"0", "false", "no", "off"}
     params = {
         "aspect": aspect,
         "quality": quality,
         "transparent": is_transparent,
         "steps": steps,
-        "mode": mode or ("edit" if uploaded or store.last_output_image(cid) else "t2i"),
+        "media_mode": media,
+        "video_seconds": duration if media == "video" else None,
+        "mode": mode
+        or (
+            "video"
+            if media == "video"
+            else ("edit" if uploaded or (use_chain and store.last_output_image(cid)) else "t2i")
+        ),
     }
     shown = display_prompt(mode or None, prompt)
     title = shown.replace("\n", " ")[:36]
-    if conv["title"] in {"新对话", ""}:
+    if (conv.get("kind") or "chat") != "canvas" and conv["title"] in {"新对话", ""}:
         store.touch_conversation(cid, title)
     else:
         store.touch_conversation(cid)
@@ -268,11 +323,31 @@ async def send_message(
             source_image=source,
             mask_bytes=mask_bytes,
             pads=pads if mode == "outpaint" else None,
+            media_mode=media,
+            video_seconds=duration,
+            chain=use_chain,
         )
     )
     _running_tasks.add(task)
     task.add_done_callback(_running_tasks.discard)
     return {"user": serialize_message(user), "assistant": serialize_message(assistant)}
+
+
+def _media_type_for(filename: str, media_type: str | None = None) -> str:
+    suffix = Path(filename).suffix.lower()
+    if media_type == "video" or suffix in {".mp4", ".webm", ".mkv", ".mov"}:
+        return {
+            ".webm": "video/webm",
+            ".mkv": "video/x-matroska",
+            ".mov": "video/quicktime",
+        }.get(suffix, "video/mp4")
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix == ".gif":
+        return "image/gif"
+    return "image/png"
 
 
 @app.get("/api/conversations/{cid}/events")
@@ -322,6 +397,145 @@ async def interrupt(body: InterruptIn | None = None) -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/canvases")
+def list_canvases() -> list[dict[str, Any]]:
+    return store.list_canvases()
+
+
+@app.post("/api/canvases")
+def create_canvas(body: CanvasIn | None = None) -> dict[str, Any]:
+    title = ((body.title if body else None) or "未命名画布").strip()[:80] or "未命名画布"
+    return store.create_canvas(title)
+
+
+@app.get("/api/canvases/{cid}")
+def get_canvas(cid: str) -> dict[str, Any]:
+    canvas = store.get_canvas(cid)
+    if not canvas:
+        raise HTTPException(404, "画布不存在")
+    return canvas
+
+
+@app.patch("/api/canvases/{cid}")
+def patch_canvas(cid: str, body: CanvasPatch) -> dict[str, Any]:
+    if body.title is None and body.viewport is None:
+        canvas = store.get_canvas(cid)
+        if not canvas:
+            raise HTTPException(404, "画布不存在")
+        return canvas
+    title = None
+    if body.title is not None:
+        title = body.title.strip()[:80]
+        if not title:
+            raise HTTPException(400, "标题不能为空")
+    updated = store.update_canvas(cid, title=title, viewport=body.viewport)
+    if not updated:
+        raise HTTPException(404, "画布不存在")
+    return updated
+
+
+@app.delete("/api/canvases/{cid}")
+def delete_canvas(cid: str) -> dict[str, Any]:
+    deleted = store.delete_canvas(cid)
+    if not deleted:
+        raise HTTPException(404, "画布不存在")
+    return {"ok": True, "id": cid}
+
+
+@app.post("/api/canvases/{cid}/items")
+def create_canvas_item(cid: str, body: CanvasItemIn) -> dict[str, Any]:
+    if body.width <= 0 or body.height <= 0:
+        raise HTTPException(400, "卡片尺寸无效")
+    kind = "video" if body.node_kind == "video" else "image"
+    item = store.add_canvas_item(
+        cid,
+        body.x,
+        body.y,
+        body.width,
+        body.height,
+        image_id=(body.image_id or "").strip() or None,
+        node_kind=kind,
+        title=body.title,
+    )
+    if not item:
+        raise HTTPException(404, "画布或图片不存在")
+    return item
+
+
+@app.patch("/api/canvases/{cid}/items/{item_id}")
+def patch_canvas_item(cid: str, item_id: str, body: CanvasItemPatch) -> dict[str, Any]:
+    item = store.update_canvas_item(
+        cid,
+        item_id,
+        x=body.x,
+        y=body.y,
+        width=body.width,
+        height=body.height,
+        z=body.z,
+        image_id=(body.image_id or "").strip() or None,
+        node_kind=body.node_kind,
+        title=body.title,
+    )
+    if not item:
+        raise HTTPException(404, "卡片不存在")
+    return item
+
+
+@app.delete("/api/canvases/{cid}/items/{item_id}")
+def delete_canvas_item(cid: str, item_id: str) -> dict[str, Any]:
+    if not store.delete_canvas_item(cid, item_id):
+        raise HTTPException(404, "卡片不存在")
+    return {"ok": True, "id": item_id}
+
+
+@app.post("/api/canvases/{cid}/edges")
+def create_canvas_edge(cid: str, body: CanvasEdgeIn) -> dict[str, Any]:
+    edge = store.add_canvas_edge(cid, body.from_item_id.strip(), body.to_item_id.strip())
+    if not edge:
+        raise HTTPException(400, "无法连接这两个节点")
+    return edge
+
+
+@app.delete("/api/canvases/{cid}/edges/{edge_id}")
+def delete_canvas_edge(cid: str, edge_id: str) -> dict[str, Any]:
+    if not store.delete_canvas_edge(cid, edge_id):
+        raise HTTPException(404, "连线不存在")
+    return {"ok": True, "id": edge_id}
+
+
+@app.post("/api/canvases/{cid}/uploads")
+async def upload_canvas_media(cid: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    canvas = store.get_canvas(cid)
+    if not canvas:
+        raise HTTPException(404, "画布不存在")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "文件是空的")
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm", ".mov", ".mkv"}:
+        suffix = ".png"
+    media = "video" if suffix in {".mp4", ".webm", ".mov", ".mkv"} else "image"
+    filename = f"{uuid.uuid4().hex}{suffix}"
+    (IMAGES_DIR / filename).write_bytes(data)
+    width = height = None
+    if media == "image":
+        try:
+            with Image.open(BytesIO(data)) as img:
+                width, height = img.size
+        except Exception:
+            pass
+    return store.add_image(
+        canvas["conversation_id"],
+        None,
+        filename,
+        Path(file.filename or "upload").stem,
+        width,
+        height,
+        kind="output",
+        media_type=media,
+    )
+
+
 @app.get("/api/library")
 def library() -> list[dict[str, Any]]:
     return store.list_library()
@@ -335,7 +549,11 @@ def get_image(iid: str) -> FileResponse:
     path = IMAGES_DIR / record["filename"]
     if not path.exists():
         raise HTTPException(404, "文件不存在")
-    return FileResponse(path, media_type="image/png", filename=Path(record["filename"]).name)
+    return FileResponse(
+        path,
+        media_type=_media_type_for(record["filename"], record.get("media_type")),
+        filename=Path(record["filename"]).name,
+    )
 
 
 @app.delete("/api/images/{iid}")
@@ -367,9 +585,13 @@ def download_image(iid: str) -> FileResponse:
     path = IMAGES_DIR / record["filename"]
     if not path.exists():
         raise HTTPException(404, "文件不存在")
+    media = _media_type_for(record["filename"], record.get("media_type"))
+    suffix = Path(record["filename"]).suffix or (".mp4" if record.get("media_type") == "video" else ".png")
+    prefix = "qwen-video" if record.get("media_type") == "video" else "qwen-image"
+    filename = f"{prefix}-{iid[:8]}{suffix}"
     return FileResponse(
         path,
-        media_type="image/png",
-        filename=f"qwen-image-{iid[:8]}.png",
-        headers={"Content-Disposition": f'attachment; filename="qwen-image-{iid[:8]}.png"'},
+        media_type=media,
+        filename=filename,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

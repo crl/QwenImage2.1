@@ -9,11 +9,20 @@ from typing import Any
 
 from PIL import Image, ImageFilter
 
-from .comfy import ComfyClient, ComfyError, collect_output_images, new_ids
-from .config import IMAGES_DIR, QUALITY_BASE, pixel_size, wrap_transparent
+from .comfy import ComfyClient, ComfyError, collect_output_images, collect_output_videos, new_ids
+from .config import (
+    IMAGES_DIR,
+    HUNYUAN_STEPS,
+    VIDEO_DURATION_DEFAULT,
+    QUALITY_BASE,
+    pixel_size,
+    video_canvas,
+    video_frame_length,
+    wrap_transparent,
+)
 from .hub import EventHub
 from .store import Store
-from .workflows import build_edit, build_masked_edit, build_outpaint_edit, build_seedvr2_upscale, build_t2i
+from .workflows import build_edit, build_hunyuan_video, build_masked_edit, build_outpaint_edit, build_t2i
 
 jobs: dict[str, str] = {}
 
@@ -31,7 +40,13 @@ OUTPAINT_NEGATIVE = (
     "empty margins, stretched edges, repeating stripes"
 )
 ENHANCE_PROMPT = (
-    "提升这张图的清晰度和细节，保持构图、人物身份、光影、颜色和内容完全不变。"
+    "在保持人物身份、姿态、构图、光影和颜色的前提下，把这张图补成清晰的高细节版本。"
+    "重建毛发、织物、五官、边缘和材质纹理，去掉模糊、噪点和压缩痕迹。"
+    "不要改动主体、姿势和画面布局。"
+)
+ENHANCE_NEGATIVE = (
+    "blurry, soft focus, pixelated, jpeg artifacts, noise, oversmooth, "
+    "plastic skin, low detail, out of focus"
 )
 
 
@@ -51,6 +66,11 @@ def model_prompt(edit_mode: str | None, prompt: str) -> str:
             return f"只修改标记的红色区域：{text}。未标记区域保持不变。"
         return ERASE_DEFAULT
     if edit_mode == "enhance":
+        if text:
+            return (
+                f"在保持人物身份、姿态、构图、光影和颜色的前提下补清细节：{text}。"
+                "重建纹理和边缘，去掉模糊和噪点，不要改动主体和画面布局。"
+            )
         return ENHANCE_PROMPT
     return text
 
@@ -75,11 +95,6 @@ def outpaint_model_prompt(prompt: str, pads: tuple[int, int, int, int] | None) -
         "保持人物、姿态、构图、光影和画风完全不变，主体仍在画面中心。"
         "不要出现空白、纯色色块、边框、拉伸或重复条纹。"
     )
-
-
-def _upscale_multiplier(width: int, height: int, max_side: int = 2048) -> float:
-    longest = max(width, height, 1)
-    return max(0.25, round(min(4.0, max_side / longest), 2))
 
 
 def _fit_size(width: int, height: int, max_side: int = 2048) -> tuple[int, int]:
@@ -232,36 +247,66 @@ async def run_generation(
     source_image: dict[str, Any] | None = None,
     mask_bytes: bytes | None = None,
     pads: tuple[int, int, int, int] | None = None,
+    media_mode: str = "image",
+    video_seconds: int = VIDEO_DURATION_DEFAULT,
+    chain: bool = True,
 ) -> None:
     try:
+        is_video = media_mode == "video"
+        progress_max = HUNYUAN_STEPS if is_video else steps
         await hub.publish(
             conversation_id,
-            {"type": "progress", "message_id": message_id, "value": 0, "max": steps},
+            {"type": "progress", "message_id": message_id, "value": 0, "max": progress_max},
         )
         if edit_mode == "outpaint":
             final_prompt = outpaint_model_prompt(prompt, pads)
         else:
             final_prompt = model_prompt(edit_mode, prompt)
-        if transparent:
+        if transparent and not is_video:
             final_prompt = wrap_transparent(final_prompt)
 
         seed = random.randint(0, 2**32 - 1)
         source_wh = None
-        if aspect == "auto":
-            if uploaded:
-                try:
-                    with Image.open(BytesIO(uploaded[0][1])) as probe:
-                        source_wh = probe.size
-                except Exception:
-                    source_wh = None
-            if source_wh is None:
-                last_for_ratio = store.last_output_image(conversation_id)
-                if last_for_ratio and last_for_ratio.get("width") and last_for_ratio.get("height"):
-                    source_wh = (int(last_for_ratio["width"]), int(last_for_ratio["height"]))
-        width, height = pixel_size(aspect, quality, source_wh)
-        resolution = QUALITY_BASE.get(quality, 1024)
+        if uploaded:
+            try:
+                with Image.open(BytesIO(uploaded[0][1])) as probe:
+                    source_wh = probe.size
+            except Exception:
+                source_wh = None
+        if source_wh is None and chain:
+            last_for_ratio = store.last_output_image(conversation_id)
+            if last_for_ratio and last_for_ratio.get("width") and last_for_ratio.get("height"):
+                source_wh = (int(last_for_ratio["width"]), int(last_for_ratio["height"]))
 
-        if edit_mode in {"erase", "outpaint", "enhance"}:
+        if is_video:
+            width, height = video_canvas(aspect, source_wh, quality)
+            frame_length = video_frame_length(video_seconds)
+            first_frame_name: str | None = None
+            if uploaded:
+                suffix = Path(uploaded[0][0]).suffix or ".png"
+                first_frame_name = await client.upload_image(
+                    uploaded[0][1],
+                    f"{uuid.uuid4().hex}{suffix}",
+                )
+            elif chain:
+                last = store.last_output_image(conversation_id)
+                if last:
+                    image_path = IMAGES_DIR / last["filename"]
+                    if image_path.exists():
+                        first_frame_name = await client.upload_image(
+                            image_path.read_bytes(),
+                            last["filename"],
+                        )
+            workflow = build_hunyuan_video(
+                final_prompt,
+                width=width,
+                height=height,
+                seed=seed,
+                first_frame_name=first_frame_name,
+                length=frame_length,
+                steps=HUNYUAN_STEPS,
+            )
+        elif edit_mode in {"erase", "outpaint", "enhance"}:
             if not source_image:
                 raise ComfyError("找不到要编辑的图片")
             source_path = IMAGES_DIR / source_image["filename"]
@@ -279,11 +324,13 @@ async def run_generation(
                 steps=steps,
             )
         else:
+            width, height = pixel_size(aspect, quality, source_wh if aspect == "auto" else None)
+            resolution = QUALITY_BASE.get(quality, 1024)
             image_names: list[str] = []
             for original_name, data in uploaded:
                 suffix = Path(original_name).suffix or ".png"
                 image_names.append(await client.upload_image(data, f"{uuid.uuid4().hex}{suffix}"))
-            last = store.last_output_image(conversation_id)
+            last = store.last_output_image(conversation_id) if chain else None
             mode = "edit" if image_names or last else "t2i"
             if mode == "edit" and not image_names and last:
                 image_path = IMAGES_DIR / last["filename"]
@@ -332,41 +379,65 @@ async def run_generation(
             )
 
         await client.wait_for_prompt(client_id, prompt_id, on_progress, on_preview)
-        outputs = await collect_output_images(client, prompt_id)
-        if not outputs:
-            raise ComfyError("没有收到生成图片")
 
         image_ids: list[str] = []
         saved_images: list[dict[str, Any]] = []
         shown_prompt = display_prompt(edit_mode, prompt)
-        for raw in outputs:
-            filename = f"{uuid.uuid4().hex}.png"
-            path = IMAGES_DIR / filename
-            width_out = height_out = None
-            try:
-                img = Image.open(BytesIO(raw))
-                width_out, height_out = img.size
-                if img.mode not in ("RGB", "RGBA"):
-                    img = img.convert("RGBA" if transparent else "RGB")
-                img.save(path, format="PNG")
-            except Exception:
+
+        if is_video:
+            videos = await collect_output_videos(client, prompt_id)
+            if not videos:
+                raise ComfyError("没有收到生成视频")
+            for original_name, raw in videos:
+                suffix = Path(original_name).suffix.lower() or ".mp4"
+                if suffix not in {".mp4", ".webm", ".mkv", ".mov"}:
+                    suffix = ".mp4"
+                filename = f"{uuid.uuid4().hex}{suffix}"
+                path = IMAGES_DIR / filename
                 path.write_bytes(raw)
-            record = store.add_image(
-                conversation_id,
-                message_id,
-                filename,
-                shown_prompt,
-                width_out,
-                height_out,
-            )
-            image_ids.append(record["id"])
-            saved_images.append(record)
+                record = store.add_image(
+                    conversation_id,
+                    message_id,
+                    filename,
+                    shown_prompt,
+                    width,
+                    height,
+                    media_type="video",
+                )
+                image_ids.append(record["id"])
+                saved_images.append(record)
+        else:
+            outputs = await collect_output_images(client, prompt_id)
+            if not outputs:
+                raise ComfyError("没有收到生成图片")
+            for raw in outputs:
+                filename = f"{uuid.uuid4().hex}.png"
+                path = IMAGES_DIR / filename
+                width_out = height_out = None
+                try:
+                    img = Image.open(BytesIO(raw))
+                    width_out, height_out = img.size
+                    if img.mode not in ("RGB", "RGBA"):
+                        img = img.convert("RGBA" if transparent else "RGB")
+                    img.save(path, format="PNG")
+                except Exception:
+                    path.write_bytes(raw)
+                record = store.add_image(
+                    conversation_id,
+                    message_id,
+                    filename,
+                    shown_prompt,
+                    width_out,
+                    height_out,
+                )
+                image_ids.append(record["id"])
+                saved_images.append(record)
 
         message = store.update_message(
             message_id,
             status="done",
-            progress=steps,
-            progress_max=steps,
+            progress=progress_max,
+            progress_max=progress_max,
             preview=None,
             image_ids=image_ids,
             error=None,
@@ -402,12 +473,14 @@ async def _tool_workflow(
     steps: int,
 ) -> dict[str, Any]:
     if edit_mode == "enhance":
-        rgb = source.convert("RGB")
-        name = await client.upload_image(_png_bytes(rgb), f"{uuid.uuid4().hex}.png")
-        return build_seedvr2_upscale(
-            name,
+        name = await client.upload_image(_png_bytes(source.convert("RGB")), f"{uuid.uuid4().hex}.png")
+        return build_edit(
+            prompt,
+            [name],
             seed=seed,
-            multiplier=_upscale_multiplier(*rgb.size),
+            steps=steps,
+            resolution=2048,
+            negative_prompt=ENHANCE_NEGATIVE,
         )
 
     if edit_mode == "erase":

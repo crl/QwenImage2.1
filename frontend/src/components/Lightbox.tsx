@@ -13,6 +13,7 @@ type Props = {
 export function Lightbox({ image, onClose, onEdit, onDelete }: Props) {
   const [actual, setActual] = useState(false)
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null)
+  const isVideo = image?.media_type === 'video'
 
   useEffect(() => {
     setActual(false)
@@ -37,18 +38,20 @@ export function Lightbox({ image, onClose, onEdit, onDelete }: Props) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" role="dialog" aria-modal="true">
       <button type="button" className="absolute inset-0 cursor-default" aria-label="关闭预览" onClick={onClose} />
       <div
-        className={`relative z-10 flex max-h-full flex-col gap-3 ${actual ? 'w-fit max-w-[calc(100vw-3rem)]' : 'max-w-5xl'}`}
+        className={`relative z-10 flex max-h-full flex-col gap-3 ${actual && !isVideo ? 'w-fit max-w-[calc(100vw-3rem)]' : 'max-w-5xl'}`}
       >
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            className={`grid h-10 min-w-10 place-items-center rounded-full px-2 text-xs font-medium ${actual ? 'bg-white/25 text-fg' : 'bg-white/10 text-fg hover:bg-white/20'}`}
-            aria-label={actual ? '适应窗口' : '1:1 显示'}
-            aria-pressed={actual}
-            onClick={() => setActual((value) => !value)}
-          >
-            1:1
-          </button>
+          {!isVideo && (
+            <button
+              type="button"
+              className={`grid h-10 min-w-10 place-items-center rounded-full px-2 text-xs font-medium ${actual ? 'bg-white/25 text-fg' : 'bg-white/10 text-fg hover:bg-white/20'}`}
+              aria-label={actual ? '适应窗口' : '1:1 显示'}
+              aria-pressed={actual}
+              onClick={() => setActual((value) => !value)}
+            >
+              1:1
+            </button>
+          )}
           <a
             href={downloadUrl(image.id)}
             className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-fg hover:bg-white/20"
@@ -56,14 +59,16 @@ export function Lightbox({ image, onClose, onEdit, onDelete }: Props) {
           >
             <Download className="h-5 w-5" aria-hidden="true" />
           </a>
-          <button
-            type="button"
-            className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-fg hover:bg-white/20"
-            aria-label="编辑这张图"
-            onClick={() => onEdit(image)}
-          >
-            <Pencil className="h-5 w-5" aria-hidden="true" />
-          </button>
+          {!isVideo && (
+            <button
+              type="button"
+              className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-fg hover:bg-white/20"
+              aria-label="编辑这张图"
+              onClick={() => onEdit(image)}
+            >
+              <Pencil className="h-5 w-5" aria-hidden="true" />
+            </button>
+          )}
           <button
             type="button"
             className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-fg hover:bg-white/20"
@@ -81,17 +86,27 @@ export function Lightbox({ image, onClose, onEdit, onDelete }: Props) {
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
         </div>
-        <div className={`checker overflow-auto rounded-3xl ${actual ? 'max-h-[calc(100vh-8rem)] max-w-full' : 'max-h-[80vh] overflow-hidden'}`}>
-          <img
-            src={imageUrl(image.id)}
-            alt={image.prompt || '生成图像'}
-            className={actual ? 'max-h-none max-w-none' : 'max-h-[80vh] w-full object-contain'}
-            style={actual && pixelWidth && pixelHeight ? { width: pixelWidth, height: pixelHeight } : undefined}
-            onLoad={(event) => {
-              const img = event.currentTarget
-              setNatural({ width: img.naturalWidth, height: img.naturalHeight })
-            }}
-          />
+        <div className={`checker overflow-auto rounded-3xl ${actual && !isVideo ? 'max-h-[calc(100vh-8rem)] max-w-full' : 'max-h-[80vh] overflow-hidden'}`}>
+          {isVideo ? (
+            <video
+              src={imageUrl(image.id)}
+              controls
+              autoPlay
+              playsInline
+              className="max-h-[80vh] w-full bg-black object-contain"
+            />
+          ) : (
+            <img
+              src={imageUrl(image.id)}
+              alt={image.prompt || '生成图像'}
+              className={actual ? 'max-h-none max-w-none' : 'max-h-[80vh] w-full object-contain'}
+              style={actual && pixelWidth && pixelHeight ? { width: pixelWidth, height: pixelHeight } : undefined}
+              onLoad={(event) => {
+                const img = event.currentTarget
+                setNatural({ width: img.naturalWidth, height: img.naturalHeight })
+              }}
+            />
+          )}
         </div>
         {image.prompt && <p className="max-w-3xl text-sm text-muted">{image.prompt}</p>}
       </div>

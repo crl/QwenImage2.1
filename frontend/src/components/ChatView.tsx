@@ -98,7 +98,7 @@ function MessageBlock({
             </div>
           )}
           <div className="border-t border-border px-4 py-3 text-sm text-muted">
-            正在生成
+            {message.params?.media_mode === 'video' ? '正在生成视频' : '正在生成'}
             {message.progress_max > 0 ? ` · ${message.progress}/${message.progress_max}` : '…'}
           </div>
         </div>
@@ -114,27 +114,45 @@ function MessageBlock({
         ) : (
           <figure key={image.id} className="overflow-hidden rounded-3xl border border-border">
             <div className="relative">
-              <button type="button" className="checker block w-full" onClick={() => onOpenImage(image)}>
-                <img
+              {image.media_type === 'video' ? (
+                <video
                   src={imageUrl(image.id)}
-                  alt={image.prompt || '生成图像'}
-                  className="max-h-[72vh] w-full object-contain"
+                  controls
+                  playsInline
+                  className="max-h-[72vh] w-full bg-black object-contain"
+                  onClick={(event) => event.stopPropagation()}
                 />
-              </button>
-              <button
-                type="button"
-                className="absolute bottom-3 left-3 z-10 rounded-full bg-black/70 px-3 py-1.5 text-sm text-white hover:bg-black/85"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onEditImage(image)
-                }}
-              >
-                编辑
-              </button>
+              ) : (
+                <button type="button" className="checker block w-full" onClick={() => onOpenImage(image)}>
+                  <img
+                    src={imageUrl(image.id)}
+                    alt={image.prompt || '生成图像'}
+                    className="max-h-[72vh] w-full object-contain"
+                  />
+                </button>
+              )}
+              {image.media_type !== 'video' && (
+                <button
+                  type="button"
+                  className="absolute bottom-3 left-3 z-10 rounded-full bg-black/70 px-3 py-1.5 text-sm text-white hover:bg-black/85"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onEditImage(image)
+                  }}
+                >
+                  编辑
+                </button>
+              )}
             </div>
             <figcaption className="flex items-center justify-between gap-3 border-t border-border bg-elevated px-4 py-3 text-sm text-muted">
               <span>
-                {image.width && image.height ? `${image.width}×${image.height}` : 'PNG'}
+                {image.media_type === 'video'
+                  ? image.width && image.height
+                    ? `视频 · ${image.width}×${image.height}`
+                    : '视频'
+                  : image.width && image.height
+                    ? `${image.width}×${image.height}`
+                    : 'PNG'}
               </span>
               <span className="flex items-center gap-1">
                 <a

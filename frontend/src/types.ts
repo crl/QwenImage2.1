@@ -17,6 +17,8 @@ export type ImageRecord = {
   created_at: string
   url: string
   deleted?: boolean
+  media_type?: 'image' | 'video'
+  kind?: string
 }
 
 export type Message = {
@@ -32,6 +34,8 @@ export type Message = {
     transparent?: boolean
     steps?: number
     mode?: string
+    media_mode?: MediaMode
+    video_seconds?: number
   }
   status: 'generating' | 'done' | 'error' | null
   progress: number
@@ -55,6 +59,51 @@ export type Conversation = ConversationSummary & {
   messages: Message[]
 }
 
+export type CanvasViewport = {
+  x: number
+  y: number
+  scale: number
+}
+
+export type CanvasSummary = {
+  id: string
+  title: string
+  conversation_id: string
+  viewport: CanvasViewport
+  created_at: string
+  updated_at: string
+}
+
+export type CanvasNodeKind = 'image' | 'video'
+
+export type CanvasItem = {
+  id: string
+  canvas_id: string
+  image_id: string | null
+  node_kind: CanvasNodeKind
+  title: string
+  x: number
+  y: number
+  width: number
+  height: number
+  z: number
+  created_at: string
+  image: ImageRecord | null
+}
+
+export type CanvasEdge = {
+  id: string
+  canvas_id: string
+  from_item_id: string
+  to_item_id: string
+  created_at?: string
+}
+
+export type CanvasDoc = CanvasSummary & {
+  items: CanvasItem[]
+  edges: CanvasEdge[]
+}
+
 export type StudioEvent =
   | { type: 'snapshot'; conversation: Conversation }
   | { type: 'progress'; message_id: string; value: number; max: number }
@@ -65,7 +114,9 @@ export type StudioEvent =
 export const ASPECTS = ['auto', '1:1', '9:16', '16:9', '3:4', '4:3', '3:2', '2:3', '4:5', '5:4', '21:9'] as const
 export type Aspect = (typeof ASPECTS)[number]
 export type Quality = '1k' | '2k' | '4k'
+export type VideoQuality = '480p' | '720p'
 export type EditMode = 'erase' | 'outpaint' | 'enhance'
+export type MediaMode = 'image' | 'video'
 export type Pads = {
   left: number
   top: number
